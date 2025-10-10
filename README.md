@@ -9,7 +9,7 @@ A Neovim plugin for working with Jupyter notebooks directly in your editor.
 - View cell output in floating or inline windows
 - Navigate between cells
 - Auto-show inline output for the current cell
-- Full kernel management (start, stop, restart)
+- Kernel management (start, stop, restart)
 
 ## Requirements
 
@@ -41,24 +41,6 @@ use {
     require("ipynb").setup()
   end,
 }
-```
-
-## Directory Structure
-
-```
-nvim-ipynb/
-├── plugin/
-│   └── ipynb.lua            # Plugin entry point, registers commands
-├── lua/
-│   └── ipynb/
-│       ├── init.lua         # Main module, public API
-│       ├── state.lua        # Centralized state management
-│       ├── cell.lua         # Cell parsing and navigation
-│       ├── kernel.lua       # Jupyter kernel management
-│       ├── output.lua       # Output window management
-│       ├── notebook.lua     # Notebook I/O (jupytext integration)
-│       └── autocmd.lua      # Autocommands for notebook files
-└── README.md
 ```
 
 ## Usage
@@ -110,7 +92,7 @@ When editing a notebook (`.ipynb` file), the following keymaps are available:
 
 ## Configuration
 
-The plugin works out of the box with sensible defaults. You can customize highlights in your config:
+Minimal configuration support currently. Only allowing highlight customization. More is planned but is not a priority.
 
 ```lua
 require("ipynb").setup()
@@ -126,22 +108,6 @@ vim.api.nvim_set_hl(0, "JupyterInlineOutput", { bg = "#264f78" })
 2. **Kernel Management**: The plugin starts a Jupyter kernel using `jupyter console` when you first run a cell
 3. **Execution**: Code is sent to the kernel via job control, and output is captured and displayed
 4. **File Saving**: When you save, the Python file is converted back to `.ipynb` format
-
-## Architecture
-
-The plugin is organized into focused modules:
-
-- **state.lua**: Central store for all plugin state (kernels, cells, outputs)
-- **cell.lua**: Cell parsing, navigation, and sign management
-- **kernel.lua**: Jupyter kernel lifecycle and code execution
-- **output.lua**: Window creation and output display logic
-- **notebook.lua**: File I/O with jupytext integration
-- **autocmd.lua**: Autocommand setup for notebook behavior
-- **init.lua**: Public API that ties everything together
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
 
 ## License
 
