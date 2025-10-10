@@ -3,7 +3,7 @@ if vim.g.loaded_ipynb then
 end
 vim.g.loaded_ipynb = 1
 
-local ipynb = require('ipynb')
+local jupyter = require('ipynb')
 
 -- Initialize the plugin
 jupyter.setup()
