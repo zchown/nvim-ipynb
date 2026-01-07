@@ -1,72 +1,110 @@
 local cell = require('ipynb.cell')
 local notebook = require('ipynb.notebook')
 local output = require('ipynb.output')
+local state = require('ipynb.state')
 
 local M = {}
 
+local function debounce(ms, fn)
+  local timer = nil
+  return function(...)
+    local args = { ... }
+    if timer then
+      timer:stop()
+      timer:close()
+    end
+    timer = vim.loop.new_timer()
+    timer:start(ms, 0, function()
+      timer:stop()
+      timer:close()
+      timer = nil
+      vim.schedule(function()
+        fn(unpack(args))
+      end)
+    end)
+  end
+end
+
+local function update_cells_and_signs(bufnr)
+  cell.parse_cells(bufnr)
+  cell.update_signs(bufnr)
+end
+
+local debounced_update = debounce(120, update_cells_and_signs)
+
 function M.setup()
-  -- Load .ipynb files
   vim.api.nvim_create_autocmd("BufReadCmd", {
     pattern = "*.ipynb",
     callback = function(args)
       local notebook_path = vim.fn.fnamemodify(args.file, ":p")
+      local detected = notebook.detect_kernel(notebook_path)
+      if detected then
+          vim.b.ipynb_kernel = detected
+      end
       local content = notebook.load(notebook_path)
-      
       if not content then return end
-      
+
       vim.api.nvim_buf_set_lines(0, 0, -1, false, content)
       vim.b.jupyter_notebook = notebook_path
       vim.bo.swapfile = false
       vim.bo.modifiable = true
-      
+
       vim.defer_fn(function()
         vim.bo.filetype = "python"
       end, 10)
-      
+
       vim.defer_fn(function()
-        cell.parse_cells(0)
-        cell.update_signs(0)
-      end, 100)
+        update_cells_and_signs(0)
+      end, 50)
     end,
   })
-  
-  -- Save .ipynb files
+
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     pattern = "*.ipynb",
     callback = function()
       notebook.save(0, vim.b.jupyter_notebook)
     end,
   })
-  
-  -- Update cells and signs on text change
+
   vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
     pattern = "*.ipynb",
-    callback = function()
+    callback = function(args)
       if vim.b.jupyter_notebook then
-        cell.parse_cells(0)
-        cell.update_signs(0)
+        debounced_update(args.buf)
       end
     end,
   })
-  
-  -- Auto-show inline output when cursor enters a cell
-  vim.api.nvim_create_autocmd("CursorMoved", {
+
+  vim.api.nvim_create_autocmd("CursorHold", {
     pattern = "*.ipynb",
-    callback = function()
+    callback = function(args)
       if not vim.b.jupyter_notebook then return end
-      
-      local bufnr = vim.api.nvim_get_current_buf()
+      local bufnr = args.buf
+
       local current_cell = cell.get_current_cell(bufnr)
-      
-      -- Hide all inline outputs first
-      output.hide_all_inline(bufnr)
-      
-      -- Show inline output for current cell if it exists
-      if current_cell then
+      if not current_cell then
+        output.hide_all_inline(bufnr)
+        return
+      end
+
+      if state.last_inline_cell[bufnr] ~= current_cell.id then
         output.show_inline(bufnr, current_cell)
       end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "BufWipeout", "BufUnload" }, {
+    pattern = "*.ipynb",
+    callback = function(args)
+      local bufnr = args.buf
+      output.hide_all_inline(bufnr)
+      state.cells[bufnr] = nil
+      state.outputs[bufnr] = nil
+      state.cell_outputs[bufnr] = nil
+      state.last_inline_cell[bufnr] = nil
     end,
   })
 end
 
 return M
+

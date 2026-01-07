@@ -43,4 +43,56 @@ function M.save(bufnr, path)
   return true
 end
 
+function M.detect_kernel(ipynb_path)
+  local ok, lines = pcall(vim.fn.readfile, ipynb_path)
+  if not ok or not lines or #lines == 0 then
+    return nil
+  end
+
+  local text = table.concat(lines, "\n")
+  local okj, obj = pcall(vim.json.decode, text)
+  if not okj or type(obj) ~= "table" then
+    return nil
+  end
+
+  local md = obj.metadata
+  if type(md) ~= "table" then return nil end
+
+  local ks = md.kernelspec
+  if type(ks) ~= "table" then return nil end
+
+  local name = ks.name
+  if type(name) == "string" and name ~= "" then
+    return name
+  end
+
+  return nil
+end
+
+function M.detect_kernel(ipynb_path)
+  local ok, lines = pcall(vim.fn.readfile, ipynb_path)
+  if not ok or not lines or #lines == 0 then
+    return nil
+  end
+
+  local text = table.concat(lines, "\n")
+  local okj, obj = pcall(vim.json.decode, text)
+  if not okj or type(obj) ~= "table" then
+    return nil
+  end
+
+  local md = obj.metadata
+  if type(md) ~= "table" then return nil end
+
+  local ks = md.kernelspec
+  if type(ks) ~= "table" then return nil end
+
+  local name = ks.name
+  if type(name) == "string" and name ~= "" then
+    return name
+  end
+
+  return nil
+end
+
 return M
