@@ -120,29 +120,47 @@ local function build_payload(code, token)
   code = code or ""
 
   local code_b64 = b64_encode(code) or ""
+
   local script = table.concat({
     ("__NVIM_TOKEN = %q"):format(token),
     ("__NVIM_CODE_B64 = %q"):format(code_b64),
-    "import base64, traceback",
-    "try:",
-    "    __NVIM_CODE = base64.b64decode(__NVIM_CODE_B64).decode('utf-8')",
-    "    exec(__NVIM_CODE, globals())",
-    "except Exception:",
-    "    traceback.print_exc()",
-    "finally:",
-    "    print(__NVIM_TOKEN)",
-    "",
+    [[
+import base64, traceback, ast
+
+try:
+    __NVIM_CODE = base64.b64decode(__NVIM_CODE_B64).decode("utf-8")
+
+    tree = ast.parse(__NVIM_CODE, mode="exec")
+
+    __nv_last_value = None
+
+    if tree.body and isinstance(tree.body[-1], ast.Expr):
+        last_expr = tree.body[-1]
+        tree.body[-1] = ast.Assign(
+            targets=[ast.Name(id="__nv_last_value", ctx=ast.Store())],
+            value=last_expr.value
+        )
+        ast.fix_missing_locations(tree)
+
+    exec(compile(tree, "<ipynb-cell>", "exec"), globals())
+
+    if "__nv_last_value" in globals() and __nv_last_value is not None:
+        print(repr(__nv_last_value))
+
+except Exception:
+    traceback.print_exc()
+
+finally:
+    print(__NVIM_TOKEN)
+]],
   }, "\n")
 
   local script_b64 = b64_encode(script) or ""
 
-  -- IMPORTANT: send as ONE statement to avoid IPython block-splitting
-  local one_liner = ("import base64; exec(base64.b64decode(%q).decode('utf-8'), globals())\n")
-    :format(script_b64)
-
-  return one_liner
+  return (
+    'import base64; exec(base64.b64decode(%q).decode("utf-8"), globals())\n'
+  ):format(script_b64)
 end
-
 
 
 function Kernel:execute(code, callback)
