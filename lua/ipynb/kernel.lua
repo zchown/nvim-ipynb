@@ -120,7 +120,6 @@ local function build_payload(code, token)
   code = code or ""
 
   local code_b64 = b64_encode(code) or ""
-  -- Build a full python script that ALWAYS prints the token
   local script = table.concat({
     ("__NVIM_TOKEN = %q"):format(token),
     ("__NVIM_CODE_B64 = %q"):format(code_b64),
