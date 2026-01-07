@@ -35,7 +35,7 @@ A Neovim plugin for working with Jupyter notebooks directly in your editor.
 
 ```lua
 use {
-  "zchown-username/nvim-ipynb",
+  "zchown/nvim-ipynb",
   ft = { "ipynb", "python" },
   config = function()
     require("ipynb").setup()
