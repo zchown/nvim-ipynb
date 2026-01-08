@@ -109,6 +109,8 @@ When editing a notebook (`.ipynb`):
 * `:JupyterStartKernel` — Start a Jupyter kernel
 * `:JupyterStopKernel` — Stop the running kernel
 * `:JupyterRestartKernel` — Restart the kernel
+* `:IpynbKernels` — List available kernels
+* `:IpynbKernel <argument>` — Set kernel by name
 
 ## Output Display
 
