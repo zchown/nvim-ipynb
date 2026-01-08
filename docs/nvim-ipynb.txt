@@ -1,0 +1,247 @@
+*nvim-ipynb.txt*  Work with Jupyter notebooks as plain text in Neovim
+
+Author:  zchown
+License: MIT
+
+==============================================================================
+CONTENTS                                                  *nvim-ipynb-contents*
+
+    1. Introduction ............................ |nvim-ipynb-introduction|
+    2. Requirements ............................ |nvim-ipynb-requirements|
+    3. Installation ............................ |nvim-ipynb-installation|
+    4. Usage ................................... |nvim-ipynb-usage|
+        4.1 Cell Markers ....................... |nvim-ipynb-cell-markers|
+        4.2 Default Keymaps .................... |nvim-ipynb-keymaps|
+    5. Commands ................................ |nvim-ipynb-commands|
+    6. Output Display .......................... |nvim-ipynb-output|
+    7. Configuration ........................... |nvim-ipynb-configuration|
+    8. How It Works ............................ |nvim-ipynb-how-it-works|
+    9. Features ................................ |nvim-ipynb-features|
+    10. Non-Goals .............................. |nvim-ipynb-non-goals|
+
+==============================================================================
+1. INTRODUCTION                                       *nvim-ipynb-introduction*
+
+nvim-ipynb is a Neovim plugin for working with Jupyter notebooks directly as
+text. It lets you open, edit, and execute `.ipynb` files inside Neovim by
+transparently converting them to a Python "percent format" (`# %%`)
+representation and back again.
+
+The goal is to stay as close as possible to the notebook execution model
+while keeping everything plain-text and editor-native.
+
+==============================================================================
+2. REQUIREMENTS                                       *nvim-ipynb-requirements*
+
+Minimum requirements:
+- Neovim 0.8 or later
+- Python with Jupyter installed:
+>
+    pip install jupyter
+<
+- Jupytext for format conversion:
+>
+    pip install jupytext
+<
+
+Optional dependencies:
+- image.nvim (https://github.com/3rd/image.nvim) for rendering images/plots
+
+==============================================================================
+3. INSTALLATION                                       *nvim-ipynb-installation*
+
+Using lazy.nvim ~
+>lua
+    {
+      "zchown/nvim-ipynb",
+      ft = { "ipynb", "python" },
+      config = function()
+        require("ipynb").setup()
+      end,
+    }
+<
+
+Using packer.nvim ~
+>lua
+    use {
+      "zchown/nvim-ipynb",
+      ft = { "ipynb", "python" },
+      config = function()
+        require("ipynb").setup()
+      end,
+    }
+<
+
+==============================================================================
+4. USAGE                                                     *nvim-ipynb-usage*
+
+------------------------------------------------------------------------------
+4.1 CELL MARKERS                                      *nvim-ipynb-cell-markers*
+
+Cells are delimited using standard Jupytext percent markers:
+>python
+    # %%
+    import numpy as np
+    print("First cell")
+
+    # %%
+    x = np.array([1, 2, 3])
+    x
+<
+
+Typing `# %%` anywhere in the buffer creates a new cell boundary. Nothing
+special is required — markers are parsed directly from the file.
+
+------------------------------------------------------------------------------
+4.2 DEFAULT KEYMAPS                                       *nvim-ipynb-keymaps*
+
+When editing a notebook (`.ipynb`):
+
+    <leader>rc          Run current cell
+    <leader>ra          Run all cells
+    <leader>ro          Toggle output window for current cell
+    <leader>rh          Close output window
+    ]c                  Jump to next cell
+    [c                  Jump to previous cell
+    <leader>rk          Start kernel
+    <leader>rK          Stop kernel
+    <leader>rR          Restart kernel
+
+==============================================================================
+5. COMMANDS                                               *nvim-ipynb-commands*
+
+                                                          *:JupyterRunCell*
+:JupyterRunCell
+    Execute the current cell against the Jupyter kernel.
+
+                                                          *:JupyterRunAll*
+:JupyterRunAll
+    Execute all cells sequentially from top to bottom.
+
+                                                          *:JupyterToggleOutput*
+:JupyterToggleOutput
+    Toggle the output window for the current cell.
+
+                                                          *:JupyterCloseOutput*
+:JupyterCloseOutput
+    Close the output window for the current cell.
+
+                                                          *:JupyterNextCell*
+:JupyterNextCell
+    Jump to the next cell marker.
+
+                                                          *:JupyterPrevCell*
+:JupyterPrevCell
+    Jump to the previous cell marker.
+
+                                                          *:JupyterStartKernel*
+:JupyterStartKernel
+    Start a Jupyter kernel for the current notebook.
+
+                                                          *:JupyterStopKernel*
+:JupyterStopKernel
+    Stop the running Jupyter kernel.
+
+                                                          *:JupyterRestartKernel*
+:JupyterRestartKernel
+    Restart the Jupyter kernel, clearing all kernel state.
+
+                                                          *:IpynbKernels*
+:IpynbKernels
+    List all available Jupyter kernels.
+
+                                                          *:IpynbKernel*
+:IpynbKernel {argument}
+    Set the kernel by name for the current notebook.
+
+==============================================================================
+6. OUTPUT DISPLAY                                          *nvim-ipynb-output*
+
+Floating output ~
+Executing a cell opens a floating window showing that cell's output.
+Press `q` or `<Esc>` to close the floating window.
+
+Inline output ~
+When enabled, previously executed cell output appears inline below the
+cell you are currently in.
+
+Outputs are associated with cells, not buffers, and persist until replaced
+or the buffer is wiped.
+
+==============================================================================
+7. CONFIGURATION                                   *nvim-ipynb-configuration*
+
+Minimal configuration is currently supported. Only highlight customization
+is available.
+
+Setup ~
+>lua
+    require("ipynb").setup()
+<
+
+Highlight Groups ~
+
+                                                          *hl-JupyterCell*
+JupyterCell
+    Highlight for cell markers (`# %%`).
+
+                                                          *hl-JupyterInlineOutput*
+JupyterInlineOutput
+    Background highlight for inline cell output.
+
+Example customization:
+>lua
+    vim.api.nvim_set_hl(0, "JupyterCell", { fg = "#61AFEF", bold = true })
+    vim.api.nvim_set_hl(0, "JupyterInlineOutput", { bg = "#264f78" })
+<
+
+More configuration options may be added later, but simplicity is a goal.
+
+==============================================================================
+8. HOW IT WORKS                                       *nvim-ipynb-how-it-works*
+
+1. Opening a notebook ~
+   When you open a `.ipynb` file, it is converted to Python using:
+>
+       jupytext --to py:percent
+<
+
+2. Editing ~
+   You edit a normal Python buffer containing `# %%` cell markers.
+
+3. Execution ~
+   Code is sent to a Jupyter kernel via `jupyter console`. Output is
+   captured and associated with the originating cell.
+
+4. Saving ~
+   On save, the Python buffer is converted back to `.ipynb` using
+   `jupytext`.
+
+At no point is notebook state hidden from the user — the buffer is the
+notebook.
+
+==============================================================================
+9. FEATURES                                               *nvim-ipynb-features*
+
+- Open `.ipynb` files as editable Python files using `# %%` cell markers
+- Execute cells against a real Jupyter kernel
+- Per-notebook kernel lifecycle (start, stop, restart)
+- Cell-aware navigation (next / previous)
+- View cell output in floating windows or inline
+- Persistent outputs per cell (toggleable)
+- Automatic round-trip conversion using `jupytext`
+
+==============================================================================
+10. NON-GOALS                                           *nvim-ipynb-non-goals*
+
+By design, nvim-ipynb does not attempt to:
+
+- Create a custom notebook file format
+- Reimplement the Jupyter UI
+- Store hidden cell state outside the buffer
+- Perform magic cell insertion — `# %%` is the source of truth
+
+If it's in the buffer, it's part of the notebook.
+
+==============================================================================
+vim:tw=78:ts=8:ft=help:norl:
