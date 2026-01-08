@@ -127,11 +127,135 @@ local function build_payload(code, token)
     [[
 import base64, traceback, ast
 
+# --- Matplotlib show() hook: emit PNG file marker for Neovim (image.nvim) ---
+def __nv_install_matplotlib_show_hook():
+    try:
+        import tempfile
+        import matplotlib.pyplot as plt
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+    except Exception:
+        return
+
+    __NVIM_PLOT_MODE = "both"  # "both" | "nvim" | "os"
+    __nv_orig_show = plt.show
+
+    def __nv_fig_score(fig):
+        # Prefer figures that actually have content
+        score = 0
+        try:
+            axes = fig.get_axes()
+        except Exception:
+            return 0
+
+        if not axes:
+            return 0
+
+        for ax in axes:
+            try:
+                score += len(getattr(ax, "lines", []))
+                score += len(getattr(ax, "collections", []))
+                score += len(getattr(ax, "patches", []))
+                score += len(getattr(ax, "images", []))
+                score += len(getattr(ax, "texts", []))
+            except Exception:
+                pass
+        return score
+
+    def __nv_pick_best_existing_fig():
+        try:
+            fignums = list(plt.get_fignums())
+        except Exception:
+            fignums = []
+
+        figs = []
+        for n in fignums:
+            try:
+                # This should reference an existing figure for valid n
+                figs.append(plt.figure(n))
+            except Exception:
+                pass
+
+        # Fallback
+        if not figs:
+            try:
+                return plt.gcf()
+            except Exception:
+                return None
+
+        def score(fig):
+            s = 0
+            try:
+                axes = fig.get_axes()
+            except Exception:
+                return -1  # unknown, deprioritize
+            if not axes:
+                return 0
+
+            for ax in axes:
+                try:
+                    s += len(getattr(ax, "lines", []))
+                    s += len(getattr(ax, "collections", []))
+                    s += len(getattr(ax, "patches", []))
+                    s += len(getattr(ax, "images", []))
+                    s += len(getattr(ax, "texts", []))
+                    # hist/bar sometimes show up as containers
+                    s += len(getattr(ax, "containers", []))
+                except Exception:
+                    pass
+            # If it has axes at all, give it a baseline > 0
+            return s if s > 0 else 1
+
+        best, best_s = None, -1
+        for fig in figs:
+            sc = score(fig)
+            if sc > best_s:
+                best, best_s = fig, sc
+
+        return best or figs[-1]
+
+    def __nv_emit_best_fig_to_file():
+        fig = __nv_pick_best_existing_fig()
+        if fig is None:
+            return
+
+        try:
+            canvas = FigureCanvasAgg(fig)
+            canvas.draw()
+
+            f = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            path = f.name
+            f.close()
+
+            canvas.print_png(path)
+            print("__NVIM_PNG__:" + path)
+        except Exception:
+            pass
+
+    def __nv_show(*args, **kwargs):
+        if __NVIM_PLOT_MODE in ("nvim", "both"):
+            __nv_emit_best_fig_to_file()
+
+        # OS window (best-effort non-blocking)
+        if __NVIM_PLOT_MODE in ("os", "both"):
+            try:
+                if "block" not in kwargs:
+                    kwargs["block"] = False
+                __nv_orig_show(*args, **kwargs)
+            except Exception:
+                try:
+                    __nv_orig_show(*args, **kwargs)
+                except Exception:
+                    pass
+
+    plt.show = __nv_show
+
+__nv_install_matplotlib_show_hook()
+# --- end hook ---
+
 try:
     __NVIM_CODE = base64.b64decode(__NVIM_CODE_B64).decode("utf-8")
 
     tree = ast.parse(__NVIM_CODE, mode="exec")
-
     __nv_last_value = None
 
     if tree.body and isinstance(tree.body[-1], ast.Expr):
@@ -144,14 +268,46 @@ try:
 
     exec(compile(tree, "<ipynb-cell>", "exec"), globals())
 
-    if "__nv_last_value" in globals() and __nv_last_value is not None:
-        print(repr(__nv_last_value))
+    # Notebook-like implicit display, but don't spam figures (even inside containers)
+    def __nv_contains_matplotlib_obj(x):
+        try:
+            import matplotlib.figure
+            import matplotlib.axes
+            Fig = matplotlib.figure.Figure
+            Ax = matplotlib.axes.Axes
+        except Exception:
+            Fig = Ax = ()
+
+        try:
+            if Fig and isinstance(x, Fig): return True
+            if Ax and isinstance(x, Ax): return True
+        except Exception:
+            pass
+
+        # containers
+        try:
+            if isinstance(x, (list, tuple, set)):
+                return any(__nv_contains_matplotlib_obj(i) for i in x)
+            if isinstance(x, dict):
+                return any(__nv_contains_matplotlib_obj(k) or __nv_contains_matplotlib_obj(v) for k, v in x.items())
+        except Exception:
+            pass
+
+        return False
+
+    try:
+        if "__nv_last_value" in globals() and __nv_last_value is not None:
+            v = __nv_last_value
+            if not __nv_contains_matplotlib_obj(v):
+                print(repr(v))
+    except Exception:
+        pass
 
 except Exception:
     traceback.print_exc()
 
 finally:
-    print(__NVIM_TOKEN)
+    print("__NVIM_SENTINEL__:" + __NVIM_TOKEN)
 ]],
   }, "\n")
 
@@ -214,41 +370,73 @@ function Kernel:process_output(raw, token)
   -- Normalize newlines
   s = s:gsub("\r\n", "\n"):gsub("\r", "\n")
 
+  -- If a base64 image exists anywhere in the output, extract it robustly.
+  -- This survives wrapping/prompting/PTY weirdness because it doesn't depend on line boundaries.
+  local function extract_image(prefix)
+    local start = s:find(prefix, 1, true)
+    if not start then return nil end
+    local b64_start = start + #prefix
+
+    -- Consume base64 chars (some consoles may insert newlines/spaces; skip them)
+    local i = b64_start
+    local chunks = {}
+    while i <= #s do
+      local c = s:sub(i, i)
+      if c:match("[A-Za-z0-9+/=]") then
+        table.insert(chunks, c)
+      elseif c == "\n" or c == " " or c == "\t" then
+        -- tolerate soft wraps / prompt formatting
+      else
+        break
+      end
+      i = i + 1
+    end
+
+    local b64 = table.concat(chunks)
+    if #b64 < 32 then
+      -- too small to be a real png/jpg
+      return nil
+    end
+    return prefix .. b64
+  end
+
+  local img =
+    extract_image("data:image/png;base64,") or
+    extract_image("data:image/jpeg;base64,")
+  -- We'll keep img around and still try to keep text output too.
+
   local lines = vim.split(s, "\n", { plain = true })
   local cleaned = {}
 
   local function strip_prompt_prefix(line)
-    -- simple-prompt (ipython console)
+    -- simple-prompt
     line = line:gsub("^>>>%s?", "")
     line = line:gsub("^%.%.%.%s?", "")
-
-    -- jupyter-console classic prompts
+    -- classic jupyter console prompt
     line = line:gsub("^In %[%d+%]:%s*", "")
     line = line:gsub("^Out%[%d+%]:%s*", "")
     return line
   end
 
   for _, line in ipairs(lines) do
-    -- Drop the sentinel if it appears
+    -- Drop token / sentinel
     if token and token ~= "" and line:find(token, 1, true) then
       goto continue
     end
 
-    -- Remove prompt prefix, *then* match on the underlying content
     local unprompted = strip_prompt_prefix(line)
 
     -- Drop our injected one-liner echo
-    -- (after prompt stripping it will begin with "import base64; exec(")
     if unprompted:match("^import%s+base64;%s*exec%(") then
       goto continue
     end
 
-    -- Drop occasional console artifacts
+    -- Drop occasional console artifact
     if unprompted == "NoneType: None" then
       goto continue
     end
 
-    -- Normalize whitespace-only lines
+    -- Keep other text output
     if unprompted:match("^%s*$") then
       if #cleaned > 0 and cleaned[#cleaned] ~= "" then
         table.insert(cleaned, "")
@@ -261,7 +449,11 @@ function Kernel:process_output(raw, token)
     ::continue::
   end
 
-  -- Trim trailing blanks
+  -- If we found an image, ensure it is included even if text output is empty.
+  if img then
+    table.insert(cleaned, 1, img)
+  end
+
   while #cleaned > 0 and cleaned[#cleaned] == "" do
     table.remove(cleaned, #cleaned)
   end
@@ -292,16 +484,23 @@ function Kernel:on_output(data)
     end
   end
 
+  local buf = self.raw_buffer:gsub("\r\n", "\n"):gsub("\r", "\n")
   local token = self.current.token
-  local buf = normalize_newlines(self.raw_buffer)
+  local marker = "__NVIM_SENTINEL__:" .. token
 
-  local pos = find_token_as_line(buf, token)
-  if pos then
-    -- everything before the token-line
-    local before = buf:sub(1, pos - 1)
-    before = before:gsub("\n*$", "\n")
+  -- Find the LAST occurrence (base64 output can be huge; last occurrence is safest)
+  local last = nil
+  local start = 1
+  while true do
+    local s = buf:find(marker, start, true)
+    if not s then break end
+    last = s
+    start = s + 1
+  end
 
-    -- stop timeout timer
+  if last then
+    local before = buf:sub(1, last - 1):gsub("\n*$", "\n")
+
     if self._timeout_timer then
       self._timeout_timer:stop()
       self._timeout_timer:close()
@@ -311,6 +510,7 @@ function Kernel:on_output(data)
     self:finish_current(before)
   end
 end
+
 
 function Kernel:on_error(data)
   if not data or #data == 0 then return end

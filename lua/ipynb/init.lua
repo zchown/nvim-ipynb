@@ -17,9 +17,11 @@ function M.run_cell()
 
   local code = current_cell:get_content()
   k:execute(code, function(out)
-    if out and #out > 0 then
+      out = out or {}
+      if #out == 0 then
+          out = { "[no output]" }
+      end
       output.display(bufnr, current_cell, out, false)
-    end
   end)
 end
 

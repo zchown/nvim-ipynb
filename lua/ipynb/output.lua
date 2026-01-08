@@ -23,16 +23,106 @@ end
 
 check_image_nvim()
 
-local function detect_image_output(lines)
+local function detect_png_marker(lines)
+  local last = nil
   for _, line in ipairs(lines) do
-    if line:match("^iVBORw0KGgo") or
-       line:match("^/9j/") or
-       line:match("^data:image/png;base64,") or
-       line:match("^data:image/jpeg;base64,") then
-      return true, line
+    local p = line:match("^__NVIM_PNG__:(.+)$")
+    if p and p ~= "" then
+      last = p
     end
   end
+  if last then
+    return true, last
+  end
   return false, nil
+end
+
+local function ensure_buf_cleanup_autocmd(bufnr)
+  if vim.b[bufnr]._ipynb_png_cleanup_set then return end
+  vim.b[bufnr]._ipynb_png_cleanup_set = true
+
+  vim.api.nvim_create_autocmd("BufWipeout", {
+    buffer = bufnr,
+    callback = function()
+      local st = require("ipynb.state")
+      local o = st.outputs and st.outputs[bufnr]
+      if not o then return end
+      for _, cellout in pairs(o) do
+        if cellout.image_tmp then
+          pcall(vim.fn.delete, cellout.image_tmp)
+          cellout.image_tmp = nil
+        end
+        cellout.image = nil
+      end
+      st.outputs[bufnr] = nil
+    end,
+  })
+end
+
+local function render_image_file_in_float(bufnr, cell, win, path)
+  if not has_image_nvim or not image_nvim then return false end
+
+  ensure_buf_cleanup_autocmd(bufnr)
+
+  state.outputs[bufnr] = state.outputs[bufnr] or {}
+  state.outputs[bufnr][cell.id] = state.outputs[bufnr][cell.id] or {}
+  local slot = state.outputs[bufnr][cell.id]
+
+  -- If we previously stored a different temp file for this cell, delete it now.
+  if slot.image_tmp and slot.image_tmp ~= path then
+    pcall(vim.fn.delete, slot.image_tmp)
+  end
+  slot.image_tmp = path
+
+  -- Create image object; render on next tick to avoid "white first render" races.
+  local ok, img = pcall(function()
+    return image_nvim.from_file(path, { window = win, x = 0, y = 0 })
+  end)
+  if not ok or not img then
+    vim.notify("Image render init failed: " .. tostring(img), vim.log.levels.WARN)
+    return false
+  end
+
+  slot.image = img
+
+  vim.schedule(function()
+      local ok2, err = pcall(function()
+          vim.defer_fn(function()
+              if slot.image and slot.image.render then
+                  slot.image:render()
+              end
+          end, 30)
+      end
+  )
+  if not ok2 then
+      vim.notify("Image render failed: " .. tostring(err), vim.log.levels.WARN)
+    end
+  end)
+
+  return true
+end
+
+local function detect_image_output(lines)
+  local last_png_path = nil
+  local last_base64 = nil
+
+  for _, line in ipairs(lines) do
+    local p = line:match("^__NVIM_PNG__:(.+)$")
+    if p and p ~= "" then
+      last_png_path = p
+    end
+
+    if line:match("^data:image/png;base64,")
+      or line:match("^data:image/jpeg;base64,")
+      or line:match("^iVBORw0KGgo")
+      or line:match("^/9j/") then
+      last_base64 = line
+    end
+  end
+
+  if last_png_path then return "file", last_png_path end
+  if last_base64 then return "base64", last_base64 end
+  return nil, nil
 end
 
 local function write_binary_file(path, bytes)
@@ -61,7 +151,7 @@ local function decode_base64_to_bytes(b64)
   return out
 end
 
-local function render_image_in_float(win, image_data)
+local function render_image_in_float(bufnr, cell, win, image_data)
   if not has_image_nvim or not image_nvim then
     return false
   end
@@ -83,20 +173,52 @@ local function render_image_in_float(win, image_data)
     return false
   end
 
-  local ok, err = pcall(function()
-    image_nvim.from_file(tmp_file, {
+  -- Create image object and render it.
+  local ok, img_or_err = pcall(function()
+    local img = image_nvim.from_file(tmp_file, {
       window = win,
       x = 0,
       y = 0,
     })
+    -- IMPORTANT: render explicitly
+    if img and img.render then
+      img:render()
+    end
+    return img
   end)
 
-  vim.fn.delete(tmp_file)
-
-  if not ok then
-    vim.notify("Image rendering failed: " .. tostring(err), vim.log.levels.WARN)
+  if not ok or not img_or_err then
+    vim.notify("Image rendering failed: " .. tostring(img_or_err), vim.log.levels.WARN)
+    -- cleanup temp file if we failed
+    vim.fn.delete(tmp_file)
     return false
   end
+
+  -- Keep reference so it doesn't get GC'd, and keep tmp file until window closes
+  state.outputs[bufnr] = state.outputs[bufnr] or {}
+  state.outputs[bufnr][cell.id] = state.outputs[bufnr][cell.id] or {}
+  state.outputs[bufnr][cell.id].image = img_or_err
+  state.outputs[bufnr][cell.id].image_tmp = tmp_file
+
+  -- Cleanup when the window closes
+  vim.api.nvim_create_autocmd("WinClosed", {
+    once = true,
+    callback = function(ev)
+      -- ev.match is the winid as a string
+      local closed = tonumber(ev.match)
+      if closed == win then
+        local o = state.outputs[bufnr] and state.outputs[bufnr][cell.id]
+        if o then
+          -- clear image ref
+          o.image = nil
+          if o.image_tmp then
+            vim.fn.delete(o.image_tmp)
+            o.image_tmp = nil
+          end
+        end
+      end
+    end,
+  })
 
   return true
 end
@@ -182,32 +304,26 @@ function M.display(bufnr, cell, lines, inline)
   local out_buf, win
 
   if oinfo and vim.api.nvim_win_is_valid(oinfo.win_id) then
-    out_buf = oinfo.bufnr
-    win = oinfo.win_id
+      out_buf = oinfo.bufnr
+      win = oinfo.win_id
   else
-    out_buf, win = create_float_window(bufnr, cell)
+      out_buf, win = create_float_window(bufnr, cell)
   end
 
   if not out_buf then return end
 
-  local has_image, image_data = detect_image_output(lines)
+  local kind, data = detect_image_output(lines)
 
-  if has_image and has_image_nvim then
-    vim.bo[out_buf].modifiable = true
-    vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, { "[Rendering image...]" })
-    vim.bo[out_buf].modifiable = false
-
-    local ok = render_image_in_float(win, image_data)
-    if not ok then
-      vim.bo[out_buf].modifiable = true
-      vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, lines)
-      vim.bo[out_buf].modifiable = false
-    end
-  else
-    vim.bo[out_buf].modifiable = true
-    vim.api.nvim_buf_set_lines(out_buf, 0, -1, false, lines)
-    vim.bo[out_buf].modifiable = false
+  if kind == "file" then
+      -- render from file
+      render_image_file_in_float(bufnr, cell, win, data)
+      return
+  elseif kind == "base64" then
+      -- legacy path
+      render_image_in_float(bufnr, cell, win, data)
+      return
   end
+
 end
 
 function M.close(bufnr, cell)
